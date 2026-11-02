@@ -1,0 +1,18 @@
+import { NextResponse } from "next/server";
+import { desc, eq } from "drizzle-orm";
+import { z } from "zod";
+import { db } from "@/db";
+import { auditLogs, blocklist, qrCodes, reports, scanEvents, users } from "@/db/schema";
+import { getCurrentUser } from "@/lib/auth";
+import { enforceDynamicPlanLimit } from "@/lib/permissions";
+async function admin() { const user = await getCurrentUser(); return user?.role === "admin" ? user : null; }
+export async function GET() { const actor = await admin(); if (!actor) return NextResponse.json({ error: "Admin role required" }, { status: 403 }); const [allUsers, allCodes, allReports, allBlocks, allAudit, allScans] = await Promise.all([db.select().from(users), db.select().from(qrCodes), db.select().from(reports).orderBy(desc(reports.createdAt)), db.select().from(blocklist), db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(100), db.select().from(scanEvents)]); const days = Array.from({ length: 14 }, (_, i) => { const day = new Date(Date.now() - (13 - i) * 86400_000).toISOString().slice(0, 10); return { day: day.slice(5), codes: allCodes.filter((c) => c.createdAt.toISOString().slice(0, 10) === day).length, scans: allScans.filter((s) => s.day === day).length }; }); const types = Object.entries(allCodes.reduce<Record<string, number>>((acc, code) => { acc[code.type] = (acc[code.type] || 0) + 1; return acc; }, {})).map(([name, value]) => ({ name, value })); return NextResponse.json({ users: allUsers.map(({ passwordHash: _, ...user }) => user), codes: allCodes.map(({ passwordHash: _, ...code }) => code), reports: allReports, blocklist: allBlocks, audit: allAudit, charts: { days, types, reportStates: ["open", "reviewing", "resolved", "dismissed"].map((name) => ({ name, value: allReports.filter((r) => r.status === name).length })) } }); }
+export async function PATCH(request: Request) { const actor = await admin(); if (!actor) return NextResponse.json({ error: "Admin role required" }, { status: 403 }); const parsed = z.object({ action: z.enum(["report.status", "code.disable", "code.restore", "user.plan", "blocklist.add", "blocklist.delete"]), id: z.string().max(200), value: z.string().max(500).optional(), reason: z.string().max(300).optional() }).safeParse(await request.json().catch(() => null)); if (!parsed.success) return NextResponse.json({ error: "Invalid admin action" }, { status: 400 }); const { action, id, value, reason } = parsed.data;
+  if (action === "report.status" && ["open", "reviewing", "resolved", "dismissed"].includes(value || "")) await db.update(reports).set({ status: value as "open" | "reviewing" | "resolved" | "dismissed" }).where(eq(reports.id, id));
+  else if (action === "code.disable") await db.update(qrCodes).set({ status: "paused", flagged: true, flagReason: reason || "Disabled by admin review" }).where(eq(qrCodes.id, id));
+  else if (action === "code.restore") await db.update(qrCodes).set({ status: "active", flagged: false, flagReason: null }).where(eq(qrCodes.id, id));
+  else if (action === "user.plan" && ["free", "pro"].includes(value || "")) { await db.update(users).set({ plan: value as "free" | "pro" }).where(eq(users.id, id)); await enforceDynamicPlanLimit(id, value as "free" | "pro"); }
+  else if (action === "blocklist.add") await db.insert(blocklist).values({ pattern: id.toLowerCase(), reason: reason || "Admin block" }).onConflictDoNothing();
+  else if (action === "blocklist.delete") await db.delete(blocklist).where(eq(blocklist.id, id));
+  else return NextResponse.json({ error: "Action value is invalid" }, { status: 400 });
+  await db.insert(auditLogs).values({ userId: actor.id, action: `admin.${action}`, target: id, meta: { value, reason } }); return NextResponse.json({ ok: true }); }

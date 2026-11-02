@@ -1,0 +1,8 @@
+name,url,preset
+Spring menu,https://example.com/menu,Print-safe
+Guest Wi-Fi details,https://example.org/wifi,Ocean
+Feedback card,https://example.com/feedback,Candy
+Portfolio,https://example.com/portfolio,Minimal
+Broken row,,Minimal
+Unknown style,https://example.com/test,Holographic
+Formula safe name,"=HYPERLINK(""https://example.com"")",Mono

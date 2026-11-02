@@ -1,0 +1,10 @@
+import { and, eq } from "drizzle-orm";
+import { db, pool } from "@/db";
+import { qrCodes, users } from "@/db/schema";
+import { ensureSeed } from "@/db/seed";
+import { recordScan } from "@/lib/analytics";
+await ensureSeed(); const [owner] = await db.select().from(users).where(eq(users.email, "user@qrforge.test")); if (!owner) throw new Error("Demo owner missing");
+const codes = await db.select().from(qrCodes).where(and(eq(qrCodes.userId, owner.id), eq(qrCodes.dynamic, true), eq(qrCodes.status, "active"))); if (!codes.length) throw new Error("No active dynamic demo codes");
+let count = 0; const max = Number(process.env.SIMULATE_COUNT || 30);
+console.info(`[QRForge demo] Simulating ${max} clearly fictional scans. These are not real visitors.`);
+const timer = setInterval(async () => { const code = codes[count % codes.length]; await recordScan(new Request("http://localhost/demo", { headers: { "user-agent": "QRForge fictional simulator" } }), code, true); count++; console.info(`[QRForge demo] ${count}/${max} → ${code.name}`); if (count >= max) { clearInterval(timer); await pool.end(); } }, Number(process.env.SIMULATE_INTERVAL_MS || 2500));
